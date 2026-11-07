@@ -1,0 +1,14 @@
+{
+  "schema": "1.0",
+  "language": "typescript",
+  "backend": "my-service",
+  "url": "ws://127.0.0.1:4610",
+  "packageManager": "npm",
+  "targets": {
+    "client": {
+      "generate": ["transport", "rpc", "plugins"],
+      "transport": "browser",
+      "outputDir": "client/generated"
+    }
+  }
+}

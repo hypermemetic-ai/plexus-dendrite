@@ -1,0 +1,46 @@
+[package]
+name = "my-service-backend"
+version = "0.1.0"
+edition = "2021"
+description = "my-service's Plexus RPC backend — a service with one activation"
+
+[[bin]]
+name = "my-service"
+path = "src/main.rs"
+
+[features]
+# The frontend's build (../frontend/dist) compiled into the binary, so the
+# service alone serves the app: `cargo build --release --features embedded-app`
+# after the frontend's build. Off, the shell serves frontend/dist from disk.
+embedded-app = []
+
+[dependencies]
+# The plexus 0.6 line from crates.io, so a new app builds with nothing
+# beside it: plexus-core 0.6, plexus-macros 0.6, plexus-transport 0.5 (core
+# 0.6's transport; default features off keeps the MCP stack out).
+plexus-core = { version = "0.7", features = ["clap"] }
+plexus-macros = "0.7"
+plexus-transport = { version = "0.6", default-features = false }
+
+# The shell: the frontend's build over HTTP beside the service, from disk or
+# embedded (build.rs). `serve` only — the WebSocket is plexus-transport's.
+plexus-shell = { version = "0.1", default-features = false, features = ["serve"] }
+
+# The activation macro's expansion names these two directly.
+jsonrpsee = { version = "0.26", features = ["server", "macros"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-stream = "0.3"
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = { version = "1", features = ["derive"] }
+clap = { version = "4", features = ["derive", "env"] }
+anyhow = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+
+[build-dependencies]
+plexus-shell = { version = "0.1", default-features = false, features = ["build"] }

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <!-- plexus-ws-port: the service's shell stamps its WebSocket's port into
+         this as it serves the page (pageUrl() in @my-service/client reads it);
+         Vite's dev server leaves the placeholder, and the client falls back. -->
+    <meta name="plexus-ws-port" content="{{WS_PORT}}" />
+    <!-- plexus-ws-url: behind a reverse proxy (--public-url) the shell
+         stamps the socket's full URL here (wss://<host>/ws), which wins
+         over the port; empty otherwise. -->
+    <meta name="plexus-ws-url" content="{{WS_URL}}" />
+    <title>my-service</title>
+    <style>
+      :root { color-scheme: light dark; font: 15px/1.5 system-ui, sans-serif; }
+      body { max-width: 36rem; margin: 3rem auto; padding: 0 1rem; }
+      form { display: flex; gap: .5rem; }
+      input { flex: 1; }
+      input, button { font: inherit; padding: .3rem .6rem; }
+      #status { opacity: .7; font-size: .85rem; }
+      #ticks { display: flex; gap: .4rem; list-style: none; padding: 0; }
+      .error { color: crimson; }
+    </style>
+  </head>
+  <body>
+    <h1>my-service</h1>
+    <p id="status">connecting…</p>
+    <form id="hello">
+      <input id="name" value="world" aria-label="name" />
+      <button>Greet</button>
+    </form>
+    <p id="greeting"></p>
+    <button id="count">Count to 5</button>
+    <ul id="ticks"></ul>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

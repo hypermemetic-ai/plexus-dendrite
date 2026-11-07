@@ -1,0 +1,9 @@
+[package]
+name = "xtask"
+version = "0.1.0"
+edition = "2021"
+publish = false
+description = "The project's automation, run as `cargo xtask <task>`"
+
+# No dependencies: `cargo xtask` should compile in a second and need
+# nothing but cargo.

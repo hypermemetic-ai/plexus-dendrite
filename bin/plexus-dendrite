@@ -1,0 +1,5 @@
+#!/usr/bin/env bash
+# plexus-dendrite: the runtime, on Node (>= 22) with tsx — src/main.ts says what it does.
+set -euo pipefail
+root="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+exec node --no-warnings --import "$root/node_modules/tsx/dist/loader.mjs" "$root/src/main.ts" "$@"

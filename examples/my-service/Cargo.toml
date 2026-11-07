@@ -1,0 +1,7 @@
+[workspace]
+# The backend, and xtask — the project's automation as a Rust binary
+# (`cargo xtask …`, aliased in .cargo/config.toml). client/ and frontend/
+# are npm packages, not cargo units: `cargo build` never needs Node or
+# Docker.
+members = ["backend", "xtask"]
+resolver = "2"

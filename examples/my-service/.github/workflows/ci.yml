@@ -1,0 +1,16 @@
+# CI — the backend. Each layer that adds a CI step adds its own workflow
+# beside this one (and its scripts/ci.d/ step); scripts/ci.sh (`cargo xtask
+# ci`) runs all of them locally.
+name: ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --workspace

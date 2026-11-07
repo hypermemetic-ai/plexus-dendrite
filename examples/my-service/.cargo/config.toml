@@ -1,0 +1,5 @@
+# `cargo xtask <task>` — the Rust side's entry point to the project's
+# automation (codegen, dev, ci). The xtask convention: a workspace binary
+# run through a cargo alias, so it needs nothing but cargo.
+[alias]
+xtask = "run --quiet --package xtask --"

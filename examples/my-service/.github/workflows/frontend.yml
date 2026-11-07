@@ -1,0 +1,37 @@
+# CI — layer ts: the frontend, which is where the TypeScript client is
+# generated: its `npm run build` builds the client first, and the client's
+# build runs scripts/codegen.sh, which starts the backend and spawns the
+# codegen container. So the runner needs Rust (to build the backend), Node,
+# Docker, and the plexus-codegen image under PLEXUS_CODEGEN_IMAGE.
+name: frontend
+on:
+  push:
+  pull_request:
+
+env:
+  # A registry name is pulled by scripts/codegen.sh when it is missing.
+  # Set the repository variable to wherever the image is published.
+  PLEXUS_CODEGEN_IMAGE: ${{ vars.PLEXUS_CODEGEN_IMAGE || 'ghcr.io/hypermemetic/plexus-codegen:latest' }}
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: npm ci
+        working-directory: frontend
+        run: npm ci
+      - name: npm run build — generates the client in the codegen container, then builds the app
+        working-directory: frontend
+        run: npm run build
+      - name: the build embedded in the binary, served by the service alone
+        run: bash scripts/ci.d/90-embedded.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: frontend-dist
+          path: frontend/dist
