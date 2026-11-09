@@ -5,7 +5,9 @@ import { createInterface } from "node:readline";
 import { join } from "node:path";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readSurface } from "../src/surface.ts";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { readNeeds, readSurface, schemaOf } from "../src/surface.ts";
 
 const root = join(import.meta.dirname, "..");
 const fixture = join(root, "test", "fixtures", "hello");
@@ -112,4 +114,29 @@ test("--via-host: the schema asked over the pipe, calls made back under the call
   await next();
   p.stdin!.end();
   assert.equal(await new Promise((r) => p.on("exit", r)), 0);
+});
+
+test("NEST-16: needs are read from the calls on a via-host client", () => {
+  const dir = mkdtempSync(join(tmpdir(), "dendrite-needs-"));
+  const file = join(dir, "index.ts");
+  const via = [
+    { name: "weather", path: "dyn.peer.w.weather", methods: ["forecast", "today"] },
+    { name: "shop", path: "shop", methods: ["items", "till"] },
+  ];
+  writeFileSync(file, `import { weather } from "./clients/weather";
+import { shop } from "./clients/shop";
+export const needs = ["host.extra"];
+export async function* rainy({ city }) {
+  for await (const d of weather.forecast({ city })) yield d;
+}
+`);
+  assert.deepEqual(readNeeds(file, via), ["dyn.peer.w.weather.forecast", "host.extra"]);
+  // A client used other than by a call: all its methods.
+  writeFileSync(file, `import { shop } from "./clients/shop";
+export async function one() { const s = shop; return await s.items({}); }
+`);
+  assert.deepEqual(readNeeds(file, via, ["x.y"]), ["shop.items", "shop.till", "x.y"]);
+  const sc = schemaOf("d", "0.1.0", "d", [], ["shop.items"]);
+  assert.deepEqual(sc.needs, [{ method: "shop.items" }]);
+  assert.equal(schemaOf("d", "0.1.0", "d", []).needs, undefined, "no host calls: nothing declared");
 });
