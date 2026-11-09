@@ -81,6 +81,18 @@ back":
 `DIR/dendrite.json` may say `"via_host": ["dyn.peer.w.weather"]` too.
 plexus-dyn's `dyn.grow` starts a dendrite this way.
 
+**What it needs of its host** (NEST-16). A host on plexus-core 0.11 lets a
+child call back only the standard upward interface (`host.schema`,
+`host.whoami`, `host.log`, `host.notify`) and what its schema's `needs`
+names. A dendrite grown `--via-host` declares them, read from `index.ts`: a
+call `weather.forecast(…)` on a client imported from `./clients/weather` is
+`<PATH>.forecast`; a client used any other way (aliased, passed on) needs
+every method it has. What the code cannot show is said by hand, as `export
+const needs = ["shop.items"]` in `index.ts` or `"needs": […]` in
+`dendrite.json`. Each need is checked by its presence when the dendrite is
+grafted (it holds no shape hash of the host's methods). A dendrite that
+calls no host declares nothing.
+
 Then it loads `DIR/index.ts` and serves every exported async generator (many
 items) or async function (one) as a method of a peer — a Plexus child (spec/12) — whose namespace is the
 directory's name, on stdio (plexus-wire spec/11, spec/12): `_info`,

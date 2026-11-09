@@ -147,8 +147,59 @@ export function readSurface(file: string): Map<string, Method> {
 
 const h16 = (s: string) => createHash("sha256").update(s).digest("hex").slice(0, 16);
 
+/**
+ * NEST-16: what a dendrite calls of its host — the `needs` its schema
+ * declares, each a method by its path from the host's root.
+ *
+ * Read from the source: a call `X.m(…)` on a client imported from
+ * `./clients/<name>` that is grown `--via-host` (`X` its binding) is
+ * `<path>.m`. A use of `X` that is not such a call (passed on, aliased,
+ * spread) cannot be read: every method of that client is needed then. And
+ * `export const needs = ["shop.items", …]` in `index.ts` (or `"needs"` in
+ * `dendrite.json`) adds what the code cannot show.
+ */
+export function readNeeds(file: string, via: { name: string; path: string; methods?: string[] }[], declared: string[] = []): string[] {
+  const text = readFileSync(file, "utf8");
+  const src = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const out = new Set<string>(declared);
+  // Each binding imported from a via-host client, by its local name.
+  const bound = new Map<string, { name: string; path: string; methods?: string[] }>();
+  src.forEachChild((s) => {
+    if (!ts.isImportDeclaration(s) || !ts.isStringLiteral(s.moduleSpecifier)) return;
+    const m = /^\.\/clients\/([^/]+?)(?:\/index(?:\.ts)?)?$/.exec(s.moduleSpecifier.text);
+    const v = m && via.find((x) => x.name === m[1]);
+    const named = s.importClause?.namedBindings;
+    if (!v || !named || !ts.isNamedImports(named)) return;
+    for (const el of named.elements) bound.set(el.name.text, v);
+  });
+  const visit = (n: ts.Node): void => {
+    if (ts.isImportDeclaration(n)) return;
+    if (ts.isCallExpression(n) && ts.isPropertyAccessExpression(n.expression) && ts.isIdentifier(n.expression.expression) && bound.has(n.expression.expression.text)) {
+      out.add(`${bound.get(n.expression.expression.text)!.path}.${n.expression.name.text}`);
+      n.arguments.forEach(visit);
+      return;
+    }
+    if (ts.isIdentifier(n) && bound.has(n.text)) {
+      const v = bound.get(n.text)!;
+      for (const m of v.methods ?? []) out.add(`${v.path}.${m}`);
+      return;
+    }
+    if (ts.isVariableStatement(n) && (ts.getModifiers(n) ?? []).some((m) => m.kind === ts.SyntaxKind.ExportKeyword)) {
+      for (const d of n.declarationList.declarations) {
+        if (ts.isIdentifier(d.name) && d.name.text === "needs" && d.initializer && ts.isArrayLiteralExpression(d.initializer)) {
+          for (const e of d.initializer.elements) if (ts.isStringLiteralLike(e)) out.add(e.text);
+          return;
+        }
+      }
+    }
+    n.forEachChild(visit);
+  };
+  src.forEachChild(visit);
+  return [...out].sort();
+}
+
 /** The child's schema (spec/07), as plexus-core's RemoteChild reads it at mount. */
-export function schemaOf(ns: string, version: string, description: string, methods: Method[]): Record<string, unknown> {
+export function schemaOf(ns: string, version: string, description: string, methods: Method[], needs?: string[]): Record<string, unknown> {
   const ms = methods.map((m) => {
     const params = {
       type: "object",
@@ -167,5 +218,10 @@ export function schemaOf(ns: string, version: string, description: string, metho
   });
   const hash = h16(JSON.stringify(ms));
   const grants = ms.map((m) => `${ns}.${m.name}`);
-  return { namespace: ns, version, description, self_hash: hash, hash, methods: ms, roles: { viewer: grants, editor: grants } };
+  const schema: Record<string, unknown> = { namespace: ns, version, description, self_hash: hash, hash, methods: ms, roles: { viewer: grants, editor: grants } };
+  // NEST-16: declared only by a dendrite that calls its host; each need by
+  // its path alone (its shape is checked by presence: the dendrite holds no
+  // shape hash of the host's methods).
+  if (needs) schema.needs = needs.map((method) => ({ method }));
+  return schema;
 }

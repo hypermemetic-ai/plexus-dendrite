@@ -23,7 +23,7 @@ import { grow, growViaHost, parseTarget, parseViaHost, type Target, type ViaHost
 import { attach, hostCall } from "./host.ts";
 import { openPipe } from "./pipe.ts";
 import { log } from "./log.ts";
-import { readSurface, schemaOf, type Method } from "./surface.ts";
+import { readNeeds, readSurface, schemaOf, type Method } from "./surface.ts";
 
 const VERSION = "0.1.0";
 
@@ -40,6 +40,8 @@ interface Opts {
   ns: string;
   targets: Target[];
   viaHost: ViaHost[];
+  /** NEST-16: `"needs"` in dendrite.json. */
+  needs: string[];
 }
 
 function parse(argv: string[]): Opts {
@@ -53,9 +55,11 @@ function parse(argv: string[]): Opts {
   let ns = basename(dir);
   const targets = new Map<string, Target>();
   const via = new Map<string, ViaHost>();
+  let needs: string[] = [];
   const file = join(dir, "dendrite.json");
   if (existsSync(file)) {
     const conf = JSON.parse(readFileSync(file, "utf8"));
+    needs = Array.isArray(conf.needs) ? conf.needs.map(String) : [];
     for (const [name, url] of Object.entries(conf.targets ?? {})) targets.set(name, parseTarget(`${name}=${url}`));
     for (const v of parseViaHost((conf.via_host ?? []).join(","))) via.set(v.name, v);
   }
@@ -70,7 +74,7 @@ function parse(argv: string[]): Opts {
     else usage();
   }
   for (const n of via.keys()) if (targets.has(n)) throw new Error(`\`${n}\` is both a --target and a --via-host`);
-  return { cmd, dir, ns, targets: [...targets.values()], viaHost: [...via.values()] };
+  return { cmd, dir, ns, targets: [...targets.values()], viaHost: [...via.values()], needs };
 }
 
 /** The module's exports that are methods, with their shapes from the source. */
@@ -101,7 +105,9 @@ async function main(): Promise<void> {
 
   if (o.cmd === "schema") {
     const methods = [...surface.values()].sort((a, b) => a.name.localeCompare(b.name));
-    process.stdout.write(JSON.stringify(schemaOf(o.ns, VERSION, describe(o.targets.map((t) => t.name)), methods), null, 2) + "\n");
+    const needs = readNeeds(join(o.dir, "index.ts"), o.viaHost, o.needs);
+    const declares = o.viaHost.length > 0 || needs.length > 0;
+    process.stdout.write(JSON.stringify(schemaOf(o.ns, VERSION, describe(o.targets.map((t) => t.name)), methods, declares ? needs : undefined), null, 2) + "\n");
     return;
   }
 
@@ -112,13 +118,20 @@ async function main(): Promise<void> {
   const grown: { backend: string }[] = [];
   for (const t of o.targets) grown.push(await grow(o.dir, t));
   if (o.cmd === "grow") return;
+  const viaGrown: { name: string; path: string; methods: string[] }[] = [];
   for (const v of o.viaHost) {
-    await growViaHost(o.dir, v, (m, p) => hostCall(m, p, undefined));
+    const g = await growViaHost(o.dir, v, (m, p) => hostCall(m, p, undefined));
+    viaGrown.push({ name: v.name, path: v.path, methods: g.methods });
     grown.push({ backend: v.path });
   }
 
   const { methods, handlers } = await load(o.dir, surface);
-  const schema = schemaOf(o.ns, VERSION, describe(grown.map((g) => g.backend)), methods);
+  // NEST-16: what it calls of its host, read from index.ts — declared when it
+  // calls its host at all, so the host holds it to them.
+  const needs = readNeeds(join(o.dir, "index.ts"), viaGrown, o.needs);
+  const declares = o.viaHost.length > 0 || needs.length > 0;
+  const schema = schemaOf(o.ns, VERSION, describe(grown.map((g) => g.backend)), methods, declares ? needs : undefined);
+  if (declares) log(`needs of its host: ${needs.join(", ") || "(the standard interface alone)"}`);
   log(`serving ${o.ns} on stdio: ${methods.map((m) => `${o.ns}.${m.name}(${m.params.map((p) => p.name).join(", ")})`).join(", ")} — schema ${schema.hash}`);
   await serveStdio({ ns: o.ns, schema: () => schema, methods: handlers }, pipe!);
   log("stdin closed — exiting");
