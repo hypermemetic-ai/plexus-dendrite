@@ -3,3 +3,4 @@ target/
 # grown at every start of a dendrite (plexus-dendrite grow)
 dendrites/*/clients/
 .run/
+test/fixtures/*/clients/

@@ -5,9 +5,13 @@
 //
 // The far side decides again (spec/12 rule 2): a call with no hop is
 // `unauthenticated`; a hop admitted for another grant is `forbidden`.
+//
+// NEST-11: each method runs inside `serving` (host.ts), so a client grown
+// `--via-host` names the call it acts under when it calls the service back.
 
-import { createInterface } from "node:readline";
+import { serving } from "./host.ts";
 import { log } from "./log.ts";
+import { openPipe, type Pipe } from "./pipe.ts";
 
 export interface Hop {
   principal?: string;
@@ -33,9 +37,9 @@ export interface Served {
 
 const md = (ns: string) => ({ provenance: [ns], plexus_hash: "dendrite", timestamp: Math.floor(Date.now() / 1000) });
 
-export async function serveStdio(s: Served): Promise<void> {
+export async function serveStdio(s: Served, pipe: Pipe = openPipe()): Promise<void> {
   const { ns } = s;
-  const write = (msg: unknown) => process.stdout.write(JSON.stringify(msg) + "\n"); // one unit per message (spec/11)
+  const write = (msg: unknown) => pipe.write(msg);
   const item = (sid: number, it: unknown) => write({ jsonrpc: "2.0", method: `${ns}.call`, params: { subscription: sid, result: it } });
   const data = (sid: number, ct: string, content: unknown) => item(sid, { type: "data", metadata: md(ns), content_type: ct, content });
   const done = (sid: number) => item(sid, { type: "done", metadata: md(ns) });
@@ -73,12 +77,13 @@ export async function serveStdio(s: Served): Promise<void> {
           { grant: `${ns}.${m}`, scope: "*", roles: ["viewer", "admin"], held_on: [] });
       }
       const p = params && typeof params === "object" ? (params as Record<string, unknown>) : {};
-      const out = h(p, { hop: hop as Hop, signal: ac.signal });
+      const within = { call: (hop as Hop).call };
+      const out = serving.run(within, () => h(p, { hop: hop as Hop, signal: ac.signal }));
       if (out && typeof (out as any)[Symbol.asyncIterator] === "function") {
         const it = (out as AsyncIterable<unknown>)[Symbol.asyncIterator]();
-        ac.signal.addEventListener("abort", () => { void it.return?.(undefined); });
+        ac.signal.addEventListener("abort", () => { void serving.run(within, () => it.return?.(undefined)); });
         while (!ac.signal.aborted) {
-          const r = await it.next();
+          const r = await serving.run(within, () => it.next());
           if (r.done || ac.signal.aborted) break;
           data(sid, `${ns}.${m}`, r.value);
         }
@@ -97,21 +102,12 @@ export async function serveStdio(s: Served): Promise<void> {
     }
   }
 
-  const rl = createInterface({ input: process.stdin, crlfDelay: Infinity });
-  for await (const line of rl) {
-    if (!line.trim()) continue;
-    let msg: any;
-    try {
-      msg = JSON.parse(line);
-    } catch {
-      write({ jsonrpc: "2.0", id: null, error: { code: -32700, message: "Parse error" } });
-      continue;
-    }
+  await pipe.serve((msg: any) => {
     const { id, method, params } = msg;
     if (method === "_info" || method === `${ns}.call`) {
       if (method !== "_info" && !(params && typeof params.method === "string")) {
         write({ jsonrpc: "2.0", id, error: { code: -32602, message: "Invalid params: method" } });
-        continue;
+        return;
       }
       const sid = nextSid++;
       write({ jsonrpc: "2.0", id, result: sid }); // the id before any item (spec/02)
@@ -130,7 +126,7 @@ export async function serveStdio(s: Served): Promise<void> {
     } else if (id !== undefined && id !== null) {
       write({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
     }
-  }
+  });
   // EOF ends every call (spec/11).
   for (const ac of live.values()) ac.abort();
 }

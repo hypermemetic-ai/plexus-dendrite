@@ -234,3 +234,96 @@ function readStamp(dir: string): { ir?: string } | null {
     return null;
   }
 }
+
+// ------------------------------------------------------------------ via the host (NEST-11)
+
+/** A service reached through the host: imported as `./clients/<name>`, called at `path`. */
+export interface ViaHost {
+  /** The name the dendrite imports it by. */
+  name: string;
+  /** Its dotted path at the service that mounted the dendrite (`weather`, `dyn.peer.weather`). */
+  path: string;
+}
+
+/** `PATH` or `NAME=PATH`, comma-separated: `--via-host weather,w2=dyn.peer.weather`. */
+export function parseViaHost(spec: string): ViaHost[] {
+  return spec.split(",").map((s) => s.trim()).filter(Boolean).map((one) => {
+    const eq = one.indexOf("=");
+    const [name, path] = eq < 0 ? [one.split(".").pop()!, one] : [one.slice(0, eq), one.slice(eq + 1)];
+    if (!/^[A-Za-z_][A-Za-z0-9_-]*$/.test(name)) throw new Error(`--via-host ${one}: the name \`${name}\` must be a word (NAME=PATH)`);
+    if (!/^[A-Za-z0-9_-]+(\.[A-Za-z0-9_-]+)*$/.test(path)) throw new Error(`--via-host ${one}: \`${path}\` is not a dotted path`);
+    return { name, path };
+  });
+}
+
+/** A JSON schema's type, in TS. */
+function jsonTs(s: any): string {
+  const t = Array.isArray(s?.type) ? s.type.filter((x: string) => x !== "null")[0] : s?.type;
+  if (t === "string") return "string";
+  if (t === "integer" || t === "number") return "number";
+  if (t === "boolean") return "boolean";
+  if (t === "array") return `Array<${jsonTs(s.items)}>`;
+  return "unknown";
+}
+
+/**
+ * Grow toward a service through the host (`--via-host`): ask the host — on
+ * the pipe, outside any call — for `<path>.schema` (its own view), and write
+ * `<dendrite>/clients/<name>/index.ts`: one method per method, each called
+ * back through the host under the call being served (host.ts).
+ */
+export async function growViaHost(dendrite: string, via: ViaHost, call: (method: string, params: unknown) => AsyncIterable<{ type: string; content?: any; message?: string }>): Promise<{ via: ViaHost; hash: string; methods: string[] }> {
+  let schema: any = null;
+  for await (const item of call(`${via.path}.schema`, {})) {
+    if (item.type === "data") schema = item.content;
+    if (item.type === "error") throw new Error(`--via-host ${via.path}: its schema: ${item.message ?? "refused"}`);
+  }
+  if (!schema || !Array.isArray(schema.methods)) throw new Error(`--via-host ${via.path}: the host answered no schema`);
+  const methods = (schema.methods as any[]).filter((m) => (m.role?.kind ?? m.role ?? "rpc") === "rpc" && m.name !== "schema");
+  const dir = join(dendrite, "clients", via.name);
+  mkdirSync(dir, { recursive: true });
+  const host = new URL("./host.ts", import.meta.url).pathname;
+  const lines: string[] = [];
+  lines.push(`// Grown by plexus-dendrite through its host from \`${via.path}\` (schema ${schema.hash ?? "?"}).`);
+  lines.push(`// Regenerated at every start of the dendrite; never edit it.`);
+  lines.push(`import { hostCall } from ${JSON.stringify(host)};`);
+  lines.push("");
+  lines.push(`/** What it was grown from: the path at the host and its schema's hash. */`);
+  lines.push(`export const stamp = ${JSON.stringify({ via: via.path, schema: schema.hash ?? null })} as const;`);
+  lines.push("");
+  lines.push(`/** A call through the host, as the caller of the call being served: \`await\` it for every item as an array, or \`for await\` it as a stream. An \`error\` item throws. */`);
+  lines.push(`export class Call<T> implements PromiseLike<T[]>, AsyncIterable<T> {`);
+  lines.push(`  constructor(private method: string, private params: Record<string, unknown>) {}`);
+  lines.push(`  async *[Symbol.asyncIterator](): AsyncIterator<T> {`);
+  lines.push(`    for await (const item of hostCall(this.method, this.params)) {`);
+  lines.push(`      if (item.type === "error") throw Object.assign(new Error(\`\${this.method}: \${item.message ?? "error"}\`), { kind: item.error_kind ?? (item as any).error?.kind });`);
+  lines.push(`      if (item.type === "data") yield item.content as T;`);
+  lines.push(`    }`);
+  lines.push(`  }`);
+  lines.push(`  async collect(): Promise<T[]> {`);
+  lines.push(`    const out: T[] = [];`);
+  lines.push(`    for await (const x of this) out.push(x);`);
+  lines.push(`    return out;`);
+  lines.push(`  }`);
+  lines.push(`  then<A = T[], B = never>(ok?: ((v: T[]) => A | PromiseLike<A>) | null, err?: ((e: unknown) => B | PromiseLike<B>) | null): Promise<A | B> {`);
+  lines.push(`    return this.collect().then(ok, err);`);
+  lines.push(`  }`);
+  lines.push(`}`);
+  lines.push("");
+  lines.push(`/** \`${via.path}\` at the host. */`);
+  lines.push(`export const ${tsIdent(via.name)} = {`);
+  for (const m of methods) {
+    const props = m.params?.properties ?? {};
+    const required = new Set<string>(m.params?.required ?? []);
+    const shape = Object.entries(props).map(([k, v]) => `${JSON.stringify(k)}${required.has(k) ? "" : "?"}: ${jsonTs(v)}`).join("; ");
+    if (m.description) lines.push(`  /** ${String(m.description).replace(/\*\//g, "* /")} */`);
+    lines.push(`  ${tsIdent(m.name)}(params: { ${shape} }${required.size ? "" : " = {}"}): Call<unknown> {`);
+    lines.push(`    return new Call<unknown>(${JSON.stringify(`${via.path}.${m.name}`)}, params);`);
+    lines.push(`  },`);
+  }
+  lines.push(`};`);
+  writeFileSync(join(dir, "index.ts"), lines.join("\n") + "\n");
+  writeFileSync(join(dir, "stamp.json"), JSON.stringify({ via: via.path, schema: schema.hash ?? null }, null, 2) + "\n");
+  log(`grew ./clients/${via.name} through the host: ${via.path} (schema ${schema.hash ?? "?"}), methods ${methods.map((m) => m.name).join(", ")}`);
+  return { via, hash: String(schema.hash ?? ""), methods: methods.map((m) => m.name) };
+}

@@ -5,18 +5,23 @@
 // as a Plexus child named after the directory, on stdio (spec/11, spec/12)
 // — what a Rust service mounts with `--child NAME=stdio:CMD`.
 //
-//   plexus-dendrite serve DIR [--target NAME=ws://HOST:PORT]… [--name NS]
+//   plexus-dendrite serve DIR [--target NAME=ws://HOST:PORT]… [--via-host [NAME=]PATH,…]… [--name NS]
 //   plexus-dendrite grow  DIR [--target NAME=ws://HOST:PORT]…     the clients only
 //   plexus-dendrite schema DIR [--name NS]                         the schema it would serve
 //
-// Targets also come from `DIR/dendrite.json` (`{"targets": {"weather": "ws://…"}}`);
-// a `--target` wins over it.
+// Targets also come from `DIR/dendrite.json` (`{"targets": {"weather": "ws://…"},
+// "via_host": ["dyn.peer.weather"]}`); a flag wins over it. A target is
+// optional: `--via-host` (NEST-11) grows a client from the host's own view of
+// a service it serves — asked over the pipe the dendrite was spawned on — and
+// calls it back through the host, as the caller of the call being served.
 
 import { existsSync, readFileSync } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { serveStdio, type Handler } from "./stdio.ts";
-import { grow, parseTarget, type Target } from "./grow.ts";
+import { grow, growViaHost, parseTarget, parseViaHost, type Target, type ViaHost } from "./grow.ts";
+import { attach, hostCall } from "./host.ts";
+import { openPipe } from "./pipe.ts";
 import { log } from "./log.ts";
 import { readSurface, schemaOf, type Method } from "./surface.ts";
 
@@ -24,7 +29,7 @@ const VERSION = "0.1.0";
 
 function usage(): never {
   process.stderr.write(
-    "usage: plexus-dendrite serve|grow|schema DIR [--target NAME=ws://HOST:PORT]… [--name NS]\n",
+    "usage: plexus-dendrite serve|grow|schema DIR [--target NAME=ws://HOST:PORT]… [--via-host [NAME=]PATH,…]… [--name NS]\n",
   );
   process.exit(2);
 }
@@ -34,6 +39,7 @@ interface Opts {
   dir: string;
   ns: string;
   targets: Target[];
+  viaHost: ViaHost[];
 }
 
 function parse(argv: string[]): Opts {
@@ -46,20 +52,25 @@ function parse(argv: string[]): Opts {
   }
   let ns = basename(dir);
   const targets = new Map<string, Target>();
+  const via = new Map<string, ViaHost>();
   const file = join(dir, "dendrite.json");
   if (existsSync(file)) {
     const conf = JSON.parse(readFileSync(file, "utf8"));
     for (const [name, url] of Object.entries(conf.targets ?? {})) targets.set(name, parseTarget(`${name}=${url}`));
+    for (const v of parseViaHost((conf.via_host ?? []).join(","))) via.set(v.name, v);
   }
   for (let i = 0; i < rest.length; i++) {
     const a = rest[i];
     const v = rest[i + 1];
     if (a === "--target" && v) (targets.set(parseTarget(v).name, parseTarget(v)), i++);
     else if (a.startsWith("--target=")) { const t = parseTarget(a.slice(9)); targets.set(t.name, t); }
+    else if (a === "--via-host" && v) { for (const x of parseViaHost(v)) via.set(x.name, x); i++; }
+    else if (a.startsWith("--via-host=")) { for (const x of parseViaHost(a.slice(11))) via.set(x.name, x); }
     else if (a === "--name" && v) (ns = v, i++);
     else usage();
   }
-  return { cmd, dir, ns, targets: [...targets.values()] };
+  for (const n of via.keys()) if (targets.has(n)) throw new Error(`\`${n}\` is both a --target and a --via-host`);
+  return { cmd, dir, ns, targets: [...targets.values()], viaHost: [...via.values()] };
 }
 
 /** The module's exports that are methods, with their shapes from the source. */
@@ -94,14 +105,22 @@ async function main(): Promise<void> {
     return;
   }
 
-  const grown = [];
+  if (o.cmd === "grow" && o.viaHost.length) throw new Error("`grow` reaches targets only: --via-host is grown at `serve`, on the pipe to the host");
+  // The pipe first: the host's `_info` waits while the clients grow over it.
+  const pipe = o.cmd === "serve" ? openPipe() : null;
+  if (pipe) attach(pipe);
+  const grown: { backend: string }[] = [];
   for (const t of o.targets) grown.push(await grow(o.dir, t));
   if (o.cmd === "grow") return;
+  for (const v of o.viaHost) {
+    await growViaHost(o.dir, v, (m, p) => hostCall(m, p, undefined));
+    grown.push({ backend: v.path });
+  }
 
   const { methods, handlers } = await load(o.dir, surface);
   const schema = schemaOf(o.ns, VERSION, describe(grown.map((g) => g.backend)), methods);
   log(`serving ${o.ns} on stdio: ${methods.map((m) => `${o.ns}.${m.name}(${m.params.map((p) => p.name).join(", ")})`).join(", ")} — schema ${schema.hash}`);
-  await serveStdio({ ns: o.ns, schema: () => schema, methods: handlers });
+  await serveStdio({ ns: o.ns, schema: () => schema, methods: handlers }, pipe!);
   log("stdin closed — exiting");
   process.exit(0);
 }

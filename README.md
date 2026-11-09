@@ -36,12 +36,14 @@ $ ./run.sh up && ./run.sh proof && ./run.sh down
 | `examples/weather` | `weather-service`: `weather.forecast { city, days }` → a stream of `day { date, rain }`; deterministic per city (lisbon: 3 of 7 days over 0.5 mm), `--live` reads open-meteo |
 | `examples/my-service` | an app made by `plexus-starter` (`new.sh my-service --frontend ts --set port=4610`), moved to plexus-core 0.7 for its `RemoteChild`, with `--child` (`ChildArgs`) wired into `main.rs` |
 | `run.sh` | starts the three (and plexus-registry) on 4600–4619 and plays the command |
-| `test/` | the runtime as a service sees it (`npm test`) |
+| `test/` | the runtime as a service sees it (`npm test`), `--via-host` included |
+| `src/pipe.ts`, `src/host.ts` | the pipe both ways (spec/14 rule 2) and the calls back to the host |
 
 ## The runtime
 
 ```sh
-plexus-dendrite serve DIR [--target NAME=ws://HOST:PORT]… [--name NS]   # a peer on stdio (a spec/12 child)
+plexus-dendrite serve DIR [--target NAME=ws://HOST:PORT]… [--via-host [NAME=]PATH,…]… [--name NS]
+                                                                         # a peer on stdio (a spec/12 child)
 plexus-dendrite grow  DIR [--target NAME=ws://HOST:PORT]…               # the clients only
 plexus-dendrite schema DIR                                              # the schema it would serve
 ```
@@ -58,6 +60,26 @@ At start, for each target:
    awaited as an array of the stream's items or iterated as the stream (an
    in-band `error` item throws); and `stamp.json`, the backend, its url and
    its IR hash.
+
+A target is optional. **`--via-host [NAME=]PATH,…`** (NEST-11) grows a
+client toward a service **its host** serves at `PATH` (`weather`,
+`dyn.peer.w.weather`; `NAME` defaults to the last segment), and every call
+goes back through the host — plexus-wire spec/14, "A child calls its service
+back":
+
+1. at start, before serving, it asks the host on the pipe it was spawned on
+   for `PATH.schema` (`_host.call` with no `under`: the host's own view; the
+   host's `_info` waits meanwhile), and writes `DIR/clients/NAME/index.ts`
+   from it — no synapse-cc, no socket: one method per method, its params
+   typed from the schema's;
+2. each call made through it is `_host.call {method, params, under}`,
+   `under` the `hop.call` of the call the dendrite is serving (found by
+   `AsyncLocalStorage`, `src/host.ts`), so the host's gate decides it **as
+   that call's caller**, within its reach, and ends it when that call ends;
+   a refusal throws, its `kind` on the error.
+
+`DIR/dendrite.json` may say `"via_host": ["dyn.peer.w.weather"]` too.
+plexus-dyn's `dyn.grow` starts a dendrite this way.
 
 Then it loads `DIR/index.ts` and serves every exported async generator (many
 items) or async function (one) as a method of a peer — a Plexus child (spec/12) — whose namespace is the
